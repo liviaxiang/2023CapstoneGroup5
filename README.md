@@ -30,3 +30,5 @@ Include group's final model  and the datasets that have been used in the model.
 Vicky Mao: https://github.com/Vickym2333/Swire-Customer-Succcess
 
 Li Xiang: https://github.com/liviaxiang/2023CapstoneGroup5
+
+Katelyn Candee: https://github.com/katelyn-candee/customer_success_analysis_MSBA_capstone
