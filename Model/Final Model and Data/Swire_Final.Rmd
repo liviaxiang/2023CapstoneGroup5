@@ -1,0 +1,628 @@
+---
+title: "Customer Success Analysis for Swire Coca-Cola"
+author: "Vicky Mao, Katelyn Candee, Li Xiang"
+date: "2023-04-04"
+output:
+  html_document:
+    theme: yeti
+    highlight: tango
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+    toc_float: true
+    fig_width: 15
+    fig_height: 10
+  pdf_document:
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+# Business Problem 
+Swire Coca-Cola is seeking a solution to predicting the longevity and profit of new potential customer from local businesses.
+
+# Analytics objective
+The objective of this analytics task is to predict customer longevity (in month) and total gross profit for new customers.Swire Coca-Cola will use the results to gauge new customer profitability and develop new customer contracts.
+
+# Questions
+1.What target variables should be used to predict customer success ?
+
+2.What kind of relationships are found between target variables and predictors ?
+
+3.What Census data should be used ？
+
+4.Which predictors should be included ?
+
+5.Which prediction models should be used?
+
+6.What are the common characteristics of well-performing customers based on prediction outcomes?
+
+# Approach
+
+To solve the business problem, we will first start by cleaning, filtering and combing the datasets as well as adding census data. Second of all,  we will explore the combined data, looking for patterns, trends, variable importance and relationships. After deciding our predictors, we will test out a few prediction models and select our best model based on model performances. 
+Finally, we plan to look for characteristics of "successful" customers based on preciction outcomes and provide the sponsor a conclusion and suggestions. 
+
+# Details
+
+This project will be completed by student team members Katelyn Candee, Li Xiang and Vicky Mao by April 13, with progress checkpoints overseen by University of Utah faculty advisor Jeremy Morris on or before the following dates:<br> 1.
+Exploratory data analysis - February 19 <br> 2.
+Model selection, evaluation and deployment - March 19<br> 3.
+Practice project presentation - April 9<br>
+
+Project team members may be reach at:<br> 1.
+Katelyn Candee - (203) 823-3129 - [u1398566\@utah.com](mailto:u1398566@utah.com){.email} <br> 2.
+Li Xiang - (385) 335-4332 - [u1328517\@utah.edu](mailto:u1328517@utah.edu){.email}<br> 3.
+Vicky Mao - (801) 970-0482 - [u1132288\@utah.edu](mailto:u1132288@utah.edu){.email}<br>
+
+
+# Data Pre-processing
+* Load customer data
+* Load sales data
+* Clean, trim and summarize sales data
+  * Extract only total of selected varibles  and maximum posting date by customer
+* Clean and trim customer data
+  * Clean zip codes and add state variable
+  * Filter to only show "UT" data
+  * Add census data
+    * Total population
+    * Median household income
+    * Median gross rent
+    * Median housing costs
+* Join customer data with sales data
+  * Calculate and classify customer longevity(month) by subtracting on-boarding date from maximum posting data
+  * Clean NAs
+  
+
+Read & Summarize Data
+
+```{r Load raw data}
+# Load packages
+library(tidyverse)
+library(dplyr)
+
+# Set working directory
+setwd("~/Desktop/Capstone/")
+
+# Import data sets
+customer <- read.csv("FSOP_Customer_Data_v2.0.csv", stringsAsFactors = FALSE)
+sales <- read.csv("FSOP_Sales_Data_v2.0.csv", stringsAsFactors = FALSE)
+
+# View Datasets
+summary(customer)
+summary(sales)
+
+```
+
+
+From the sale data, we extract total sales,Discount,Invoice Price... and overall maximum posting date by Customer Number. Maximum posting date will be used later to calculate one of our target variables, "Customer Longevity".
+```{r Clean and summarize sales data}
+# Convert date variables to dates
+sales$MIN_POSTING_DATE <- as.Date(sales$MIN_POSTING_DATE)
+sales$MAX_POSTING_DATE <- as.Date(sales$MAX_POSTING_DATE)
+#customer$ON_BOARDING_DATE <- as.Date(customer$ON_BOARDING_DATE, format = "%m/%d/%Y")
+
+# Convert remaining character type variables to factors
+sales <- sales %>%
+  mutate_if(is.character, as.factor)
+
+# Extract total sales and maximum max posting date by customer
+sales <- sales %>%
+  group_by(CUSTOMER_NUMBER_BLINDED) %>%
+  summarize(GROSS_PROFIT_DEAD_NET = sum(GROSS_PROFIT_DEAD_NET),
+             DISCOUNT = sum( DISCOUNT),
+            INVOICE_PRICE = sum(INVOICE_PRICE),
+            DEAD_NET = sum(DEAD_NET),
+            PHYSICAL_VOLUME = sum(PHYSICAL_VOLUME),
+            COGS = sum(COGS),
+            NUM_OF_TRANSACTIONS = sum(NUM_OF_TRANSACTIONS),
+            MIN_POSTING_DATE = min(MIN_POSTING_DATE),
+            MAX_POSTING_DATE = max(MAX_POSTING_DATE))
+```
+
+Add "state" to customer data set. This will be used to request American Community Survey data from the Census Bureau.
+```{r Clean customer zip codes and add state}
+
+#library(zipcodeR)
+
+# Clean zip codes
+customer$ADDRESS_ZIP_CODE <- substr(customer$ADDRESS_ZIP_CODE, 0, 5)
+
+# Obtain data frame of states by zip code
+zipcode_state <- zipcodeR::zip_code_db %>%
+  select(zipcode, state) %>%
+  rename(ADDRESS_ZIP_CODE = zipcode,
+         ADDRESS_STATE = state)
+
+# Merge states with customer data set and filter to only UT customers
+customer <- left_join(customer, zipcode_state, by = "ADDRESS_ZIP_CODE") %>%
+  filter(ADDRESS_STATE == "UT")
+
+# Check for missing state values after merge
+sum(is.na(customer$ADDRESS_STATE))
+
+# Identify city-zip code combinations missing values for imputing
+customer[is.na(customer$ADDRESS_STATE), ] %>%
+  select(ADDRESS_CITY, ADDRESS_ZIP_CODE, ADDRESS_STATE) %>%
+  distinct(ADDRESS_CITY, ADDRESS_ZIP_CODE)
+
+# Recheck for missing state values after merge
+sum(is.na(customer$ADDRESS_STATE))
+
+# Convert all character type variables to factor type
+customer <- customer %>%
+  mutate_if(is.character, as.factor)
+
+```
+
+The focus of this analysis is Swire Coca-Cola's B2B restaurant segment, so we filter our sample to include only customers assigned the "Eating & Drinking" activity cluster and labelled as a "Direct Store Delivery (DSD)" business type.
+ 
+```{r Filter down customer data to Eating & Drinking and DSD}
+# Save filtered customer data set
+customer <- customer %>%
+  filter(CUSTOMER_ACTIVITY_CLUSTER_DESCRIPTION == "Eating & Drinking" &
+           BUSINESS_TYPE_EXTENSION_DESCRIPTION == "DSD")
+```
+
+Extract the following information by "county" from the American Community Survey administered by the U.S. Census Bureau:
+* Total population
+* Median household income (in the last 12 months)
+* Median gross rent
+* Median monthly housing costs
+* Selected monthly owner costs
+* Average household size
+* Aggregate number of vehicles used to commute to work
+* Median year structure built
+* Number of households without internet access
+
+
+```{r Extract Census data by county}
+library(tidycensus)
+# Store key for Census Bureau API 
+census_key <- readLines("census_key.txt")
+census_api_key(census_key)
+
+# Look up all available variables in ACS5 Census data
+census_var_all <- load_variables(2021, "acs5",cache = TRUE)
+
+ # Extract ACS5 census data by county
+ census_data <- get_acs(geography = "county",
+                       state = levels(customer$ADDRESS_STATE),
+                       variables = c("B01003_001", "B19019_001",
+                                     "B25064_001", "B25105_001",
+                                     "B25094_001", "B25010_001",
+                                     "B08015_001", "B25035_001",
+                                     "B28011_008"),
+                       year = 2021) %>%
+  select(NAME, variable, estimate) %>%
+  separate(NAME, c("COUNTY", "ADDRESS_STATE"), sep = ", ") %>%
+  mutate(COUNTY = str_remove_all(COUNTY, " County"),
+         COUNTY = str_to_upper(COUNTY),
+         ADDRESS_STATE = state.abb[match(ADDRESS_STATE, state.name)],
+         variable = case_when(variable == "B01003_001" ~ "TOTAL_POP",
+                              variable == "B19019_001" ~ "MED_INCOME",
+                              variable == "B25064_001" ~ "MED_GROSS_RENT",
+                              variable == "B25105_001" ~ "MED_HOUSING_COST",
+                              variable == "B25094_001" ~ "MONTHLY_OWNER_COSTS",
+                              variable == "B25010_001" ~ "AVG_HOUSEHOLD_SIZE",
+                              variable == "B08015_001" ~ "AGG_NUM_VEHICLES",
+                              variable == "B25035_001" ~ "MED_YEAR_BUILT",
+                              variable == "B28011_008" ~ "NO_INTERNET")) %>%
+  spread(variable, estimate) %>%
+  mutate_if(is.character, as.factor)
+
+```
+
+Join the census data with our customer data.
+```{r Join census data}
+# Join census data with customer data
+customer <- left_join(customer, census_data,  
+                      by = c("COUNTY", "ADDRESS_STATE")) 
+
+# Check merging census data did not introduce missing values
+cbind(
+   lapply(
+lapply(customer, is.na), sum))
+
+```
+
+
+Join the customer data with the summarized sales data .
+```{r Join sales and customer data}
+# Left-join customer data with summarized sales data
+customer_sales <- left_join(customer, sales, by = "CUSTOMER_NUMBER_BLINDED")
+
+# Check & clean join make sure there is no missing values
+sum(is.na(customer_sales))
+```
+
+Calculate "customer longevity" by subtracting "on-boarding date" from "maximum posting date"
+```{r}
+library(lubridate)
+# Extract on-boarding year from on-boarding date
+customer_sales$LONGEVITY <- time_length(
+  difftime(customer_sales$MAX_POSTING_DATE, 
+           customer_sales$ON_BOARDING_DATE),
+  "year")
+
+```
+
+
+# Exploring Data & Predictors
+
+* Check for correlation
+* Create base linear models to check relationships and base R^2
+* Develop randomForest to eliminate predictors and prevent overfiting 
+* Create new linear models after predictor elimination 
+
+
+```{r include = FALSE}
+library(psycho) 
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(e1071)
+library(caret)
+library(randomForest)
+library(glmnet)
+```
+
+Check correlation between selected variables. LONGEVITY is not highly correlated with any other varibles, however, GROSS_PROFIT_DEAD_NET is highly correlated with DEAD_NET, INVOICE_PRICE, DISCOUNT, etc.
+```{r}
+# Checking for multicollinearity and plotting correlations between predictors
+correl <- cor(customer_sales[c(19,20,21,22,24,26,27,28,29,30,31,32,33,36)])
+ggcorrplot::ggcorrplot(correl,hc.order=TRUE, type="lower",lab=TRUE) 
+cor(correl)
+```
+
+
+Checking linear relationship between LONGEVITY - GROSS_PROFIT_DEAD_NET, the relationship is positive but not strong.
+```{r}
+# LONGEVITY - GROSS_PROFIT_DEAD_NET
+model_lm_GROSS_PROFIT <- lm(LONGEVITY ~ GROSS_PROFIT_DEAD_NET, data = customer_sales)
+summary(model_lm_GROSS_PROFIT)
+
+# Relationship visulization
+ggplot(customer_sales,aes(x = GROSS_PROFIT_DEAD_NET, y =LONGEVITY)) + geom_point() +geom_smooth(method = "lm")
+```
+
+
+Linear regression for LONGEVITY, r² is 0.1345, Many NA coefficient varibles
+```{r}
+#Linear Model for Longevity
+lm_LONGEVITY <- lm(customer_sales,formula=LONGEVITY ~  SALES_OFFICE_DESCRIPTION +DELIVERY_PLANT_DESCRIPTION +COUNTY+CUSTOMER_TRADE_CHANNEL_DESCRIPTION+CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+ CUSTOMER_TRADE_CHANNEL_DESCRIPTION2+ AGG_NUM_VEHICLES+AVG_HOUSEHOLD_SIZE+ MED_GROSS_RENT+MED_HOUSING_COST+MED_INCOME+MED_YEAR_BUILT+MONTHLY_OWNER_COSTS+TOTAL_POP+DISCOUNT+NUM_OF_TRANSACTIONS)
+
+summary(lm_LONGEVITY)
+```
+
+
+
+Linear Regression for GROSS_PROFIT_DEAD_NET,r² is 0.8556, Many NA coefficient varibles
+```{r}
+#Linear model for GROSS_PROFIT_DEAD_NET
+lm_Profit <- lm(customer_sales,formula= GROSS_PROFIT_DEAD_NET ~  SALES_OFFICE_DESCRIPTION+DELIVERY_PLANT_DESCRIPTION+COUNTY +CUSTOMER_TRADE_CHANNEL_DESCRIPTION+CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION + CUSTOMER_TRADE_CHANNEL_DESCRIPTION2+DISCOUNT+NUM_OF_TRANSACTIONS+ AGG_NUM_VEHICLES+AVG_HOUSEHOLD_SIZE+ MED_GROSS_RENT+MED_HOUSING_COST+MED_INCOME+MED_YEAR_BUILT+MONTHLY_OWNER_COSTS+TOTAL_POP)
+
+summary(lm_Profit)
+```
+
+
+Split Data into train & test
+```{r}
+
+#Filter data for LONGEVITY & GROSS_PROFIT_DEAD_NET
+CS_L_filtered <- customer_sales [, -c(1,4,5,6,8,9,17,27,29,30,31,32,34,35)]
+CS_P_filtered <- customer_sales [, -c(1,4,5,6,8,9,17,29,30,31,32,34,35,36)]
+
+#Split Data tp train and test for LONGEVITY
+split = 0.7
+trainIndex_L<-createDataPartition(CS_L_filtered$LONGEVITY, p=split, list = FALSE)
+train_L<-CS_L_filtered[trainIndex_L, ]
+test_L<- CS_L_filtered[-trainIndex_L,]
+
+#Split Data tp train and test for GROSS_PROFIT_DEAD_NET
+trainIndex_P<-createDataPartition(CS_P_filtered$GROSS_PROFIT_DEAD_NET, p=split, list = FALSE)
+train_P<-CS_P_filtered[trainIndex_P, ]
+test_P<- CS_P_filtered[-trainIndex_P,]
+
+```
+
+
+Class Tree and check for variable importance for LONGEVITY
+```{r}
+# Organize Variables to include in Random Forest, same as the variables used in lm regression above
+tree_x_L <- factor(c("SALES_OFFICE_DESCRIPTION","DELIVERY_PLANT_DESCRIPTION","COUNTY","CUSTOMER_ACTIVITY_CLUSTER_DESCRIPTION",
+"CUSTOMER_TRADE_CHANNEL_DESCRIPTION","CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION","CUSTOMER_TRADE_CHANNEL_DESCRIPTION2",
+"AGG_NUM_VEHICLES","AVG_HOUSEHOLD_SIZE","MED_GROSS_RENT","MED_HOUSING_COST","MED_INCOME","MED_YEAR_BUILT","MONTHLY_OWNER_COSTS","TOTAL_POP", "DISCOUNT","NUM_OF_TRANSACTIONS" ))
+   
+# Fitting Random Forest to the train dataset
+set.seed(120)  
+classifier_RF_L = randomForest(x = train_L[,tree_x_L],
+                             y = train_L$LONGEVITY,
+                             ntree = 500)
+classifier_RF_L
+
+# Plotting model
+plot(classifier_RF_L)
+
+# Importance plot
+importance(classifier_RF_L)
+  
+# Variable importance plot
+varImpPlot(classifier_RF_L)
+
+```
+
+Class Tree and check for variable importance for GROSS_PROFIT_DEAD_NET
+```{r}
+# Organize Variables to include in Random Forest, same as the variables used in lm regression above
+tree_x_P <- factor(c("SALES_OFFICE_DESCRIPTION","DELIVERY_PLANT_DESCRIPTION","COUNTY","CUSTOMER_TRADE_CHANNEL_DESCRIPTION", "CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION","CUSTOMER_TRADE_CHANNEL_DESCRIPTION2","DISCOUNT","AGG_NUM_VEHICLES","AVG_HOUSEHOLD_SIZE","MED_GROSS_RENT", "MED_HOUSING_COST","MED_INCOME","MED_YEAR_BUILT","MONTHLY_OWNER_COSTS","TOTAL_POP"))
+
+# Fitting Random Forest to the train dataset
+set.seed(120)  
+classifier_RF_P = randomForest(x = train_P[,tree_x_P],
+                             y = train_P$GROSS_PROFIT_DEAD_NET,
+                             ntree = 500)
+classifier_RF_P
+
+#Plot
+plot(classifier_RF_P)
+# Importance plot
+importance(classifier_RF_P)
+  
+# Variable importance plot
+varImpPlot(classifier_RF_P)
+
+```
+
+
+
+
+
+# Modelling
+
+We fit three different model types to predict customer longevity and gross profit:
+
+* Multi Regression
+* Lasso
+* Ridge
+* Kvsm
+* Gbm
+* Model results comparison
+
+
+## Predicting LONGEVITY
+
+Multi Regression for LONGEVITY
+```{r}
+# Define matrix of predictor variables from train
+train_x_L <- data.matrix(train_L[,c("SALES_OFFICE_DESCRIPTION","COUNTY","CUSTOMER_TRADE_CHANNEL_DESCRIPTION",
+"DELIVERY_PLANT_DESCRIPTION","CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION","DISCOUNT","AGG_NUM_VEHICLES","AVG_HOUSEHOLD_SIZE",
+"MED_HOUSING_COST","MONTHLY_OWNER_COSTS","TOTAL_POP")])
+
+# Define response variable
+train_y_L <- train_L$LONGEVITY
+
+# Define matrix of predictor variables from test
+test_x_L <- data.matrix(test_L[,c("SALES_OFFICE_DESCRIPTION","COUNTY","CUSTOMER_TRADE_CHANNEL_DESCRIPTION", "DELIVERY_PLANT_DESCRIPTION","CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION","DISCOUNT","AGG_NUM_VEHICLES","AVG_HOUSEHOLD_SIZE", "MED_HOUSING_COST","MONTHLY_OWNER_COSTS","TOTAL_POP")])
+test_y_L <- test_L$LONGEVITY
+
+# Multi regression
+model_lm_L <- lm(LONGEVITY ~SALES_OFFICE_DESCRIPTION+ COUNTY+DELIVERY_PLANT_DESCRIPTION +CUSTOMER_TRADE_CHANNEL_DESCRIPTION+CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+DISCOUNT +AGG_NUM_VEHICLES+AVG_HOUSEHOLD_SIZE+MED_HOUSING_COST+MONTHLY_OWNER_COSTS+TOTAL_POP,
+               data = train_L)
+summary(model_lm_L)
+summary(train_L)
+#Predict
+lm_L_predictions <- model_lm_L %>% predict(test_L)
+
+# Overall fit of the prediction model,RMSE & R^2 & MAE
+lm_fit_L <- postResample(lm_L_predictions, test_L$LONGEVITY)
+
+# Overall fit of the prediction model,MSE
+mse_lm_L <- mean((test_y_L - lm_L_predictions)^2)
+print(paste("Test set mean squared error:", mse_lm_L))
+```
+
+Ksvm Model for LONGEVIT
+```{r}
+
+library(kernlab)
+# Train ksvm model with default settings
+set.seed(123)
+ksvm_L <- ksvm(train_L$LONGEVITY ~ SALES_OFFICE_DESCRIPTION+ COUNTY+DELIVERY_PLANT_DESCRIPTION +CUSTOMER_TRADE_CHANNEL_DESCRIPTION+CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+DISCOUNT +AGG_NUM_VEHICLES+AVG_HOUSEHOLD_SIZE+MED_HOUSING_COST+MONTHLY_OWNER_COSTS+TOTAL_POP,
+                data = train_L)
+
+# Overall fit of the prediction model,RMSE & R^2 & MAE
+ksvm_predictions_test_L <- predict(ksvm_L,test_L)
+ksvm_fit_L <- postResample(ksvm_predictions_test_L, test_L$LONGEVITY)
+
+# Overall fit of the prediction model,MSE
+mse_ksvm_L <- mean((test_y_L - ksvm_predictions_test_L)^2)
+print(paste("Test set mean squared error:", mse_ksvm_L))
+
+```
+
+
+Gbm Model for LONGEVITY
+```{r}
+library(gbm)
+# Fit a gradient boosting regression model with 100 trees and 0.01 shrinkage
+gbm_L = gbm(train_L$LONGEVITY ~ SALES_OFFICE_DESCRIPTION+ COUNTY+DELIVERY_PLANT_DESCRIPTION +CUSTOMER_TRADE_CHANNEL_DESCRIPTION+CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+DISCOUNT +AGG_NUM_VEHICLES+AVG_HOUSEHOLD_SIZE+MED_HOUSING_COST+MONTHLY_OWNER_COSTS+TOTAL_POP,
+                data = train_L,
+                distribution = "gaussian",
+                cv.folds = 10,
+                shrinkage = .01,
+                n.minobsinnode = 10,
+                n.trees = 500)
+ 
+
+gbm_predictions_test_L <- predict.gbm(gbm_L, test_L)
+
+# Evaluate the performance of the model on the test set
+gbm_fit_L <- postResample(gbm_predictions_test_L, test_L$LONGEVITY)
+mse_gbm_L <- mean((test_L$LONGEVITY - gbm_predictions_test_L)^2)
+print(paste("Random Forest Regression MSE:", mse_gbm_L))
+```
+
+
+## Predicting GROSS_PROFIT_DEAD_NET
+
+Multi Regression for GROSS_PROFIT_DEAD_NET
+```{r}
+# Define matrix of predictor variables from train
+train_x_P <- data.matrix(train_P[,c("SALES_OFFICE_DESCRIPTION","COUNTY","CUSTOMER_TRADE_CHANNEL_DESCRIPTION","CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION","DISCOUNT","MED_HOUSING_COST","MED_INCOME","MED_YEAR_BUILT","MONTHLY_OWNER_COSTS","TOTAL_POP")])
+
+# Define response variable
+train_y_P <- train_P$GROSS_PROFIT_DEAD_NET
+
+# Define matrix of predictor variables from test
+test_x_P <- data.matrix(test_P[,c("SALES_OFFICE_DESCRIPTION","COUNTY","CUSTOMER_TRADE_CHANNEL_DESCRIPTION","CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION","DISCOUNT","MED_HOUSING_COST","MED_INCOME","MED_YEAR_BUILT","MONTHLY_OWNER_COSTS","TOTAL_POP")])
+test_y_P <- test_P$GROSS_PROFIT_DEAD_NET
+
+# Multi regression
+model_lm_P <- lm(GROSS_PROFIT_DEAD_NET~SALES_OFFICE_DESCRIPTION+COUNTY+CUSTOMER_TRADE_CHANNEL_DESCRIPTION+
+                   CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+DISCOUNT++AVG_HOUSEHOLD_SIZE+ MED_INCOME+MED_YEAR_BUILT+MONTHLY_OWNER_COSTS+TOTAL_POP, 
+               data = train_P)
+
+#Prediction
+lm_P_predictions <- model_lm_P %>% predict(test_P)
+
+# Overall fit of the prediction model,RMSE & R^2 & MAE
+lm_fit_P <- postResample(lm_P_predictions, test_P$GROSS_PROFIT_DEAD_NET)
+
+# Overall fit of the prediction model,MSE
+mse_lm_P <- mean((test_y_P - lm_P_predictions)^2)
+print(paste("Test set mean squared error:", mse_lm_P))
+```
+
+
+Lasso for LONGEVITY
+```{r}
+#perform k-fold cross-validation to find optimal lambda value
+cv_lasso_model_P <- cv.glmnet(train_x_P, train_y_P, alpha = 1, standardize = TRUE, nfolds = 5)
+
+# Find optimal lambda value that minimizes test MSE
+best_lambda_lasso_P <- cv_lasso_model_P$lambda.min
+best_lambda_lasso_P #399.5965
+
+# Produce plot of test MSE by lambda value
+plot(cv_lasso_model_P)
+
+# Find coefficients of best model
+best_lasso_model_P <- glmnet(train_x_P, train_y_P, alpha = 1, lambda = best_lambda_lasso_P)
+coef(best_lasso_model_P)
+
+
+
+# Prediction with lasso
+lasso_predictions_test_P <- predict(best_lasso_model_P,s = best_lambda_lasso_P,newx = test_x_P)
+
+
+# Overall fit of the prediction model,RMSE & R^2 & MAE
+lasso_fit_P <-postResample(lasso_predictions_test_P, test_P$GROSS_PROFIT_DEAD_NET)
+
+# Overall fit of the prediction model,MSE
+mse_lasso_P <- mean((test_y_P - lasso_predictions_test_P)^2)
+print(paste("Test set mean squared error:", mse_lasso_P))
+```
+
+Ridge for  GROSS_PROFIT_DEAD_NET
+```{r}
+# Perform k-fold cross-validation to find optimal lambda value
+cv_ridge_P <- cv.glmnet(train_x_P, train_y_P, alpha = 0, standardize = TRUE, nfolds = 5)
+
+# Find optimal lambda value that minimizes test MSE
+best_lambda_ridge_P <- cv_ridge_P$lambda.min
+best_lambda_ridge_P # 5533.958
+
+# Produce plot of test MSE by lambda value
+plot(cv_ridge_P) 
+
+# Find coefficients of best model
+best_ridge_model_P <- glmnet(train_x_P, train_y_P, alpha = 0, lambda = best_lambda_ridge_P, standardize = TRUE)
+coef(best_ridge_model_P)
+
+# Prediction with ridge
+ridge_predictions_test_P <- predict(best_ridge_model_P,s = best_lambda_ridge_P,newx = test_x_P)
+
+# Overall fit of the prediction model,RMSE & R^2 & MAE
+ridge_fit_P <- postResample(ridge_predictions_test_P, test_P$GROSS_PROFIT_DEAD_NET)
+
+# Overall fit of the prediction model,MSE
+mse_ridge_P <- mean((test_y_P - ridge_predictions_test_P)^2)
+print(paste("Test set mean squared error:", mse_ridge_P))
+
+```
+
+ksvm Model for  GROSS_PROFIT_DEAD_NET
+```{r}
+# Train ksvm model with default settings
+set.seed(123)
+ksvm_P <- ksvm(train_P$GROSS_PROFIT_DEAD_NET ~ SALES_OFFICE_DESCRIPTION+COUNTY+CUSTOMER_TRADE_CHANNEL_DESCRIPTION+
+                   CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+DISCOUNT++AVG_HOUSEHOLD_SIZE+ MED_INCOME+MED_YEAR_BUILT+MONTHLY_OWNER_COSTS+TOTAL_POP,
+                data = train_P)
+
+# Overall fit of the prediction model,RMSE & R^2 & MAE
+ksvm_predictions_test_P <- predict(ksvm_P,test_P)
+ksvm_fit_P <- postResample(ksvm_predictions_test_P, test_P$GROSS_PROFIT_DEAD_NET)
+
+# Overall fit of the prediction model,MSE
+mse_ksvm_P <- mean((test_y_P - ksvm_predictions_test_P)^2)
+print(paste("Test set mean squared error:", mse_ksvm_P))
+
+```
+
+Gbm Model for GROSS_PROFIT_DEAD_NET
+```{r}
+# Fit a gradient boosting regression model with 100 trees and 0.01 shrinkage
+gbm_P = gbm(train_P$GROSS_PROFIT_DEAD_NET ~SALES_OFFICE_DESCRIPTION+COUNTY+CUSTOMER_TRADE_CHANNEL_DESCRIPTION+
+                   CUSTOMER_SUB_TRADE_CHANNEL_DESCRIPTION+DISCOUNT++AVG_HOUSEHOLD_SIZE+ MED_INCOME+MED_YEAR_BUILT+MONTHLY_OWNER_COSTS+TOTAL_POP,
+                data = train_P,
+                distribution = "gaussian",
+                cv.folds = 10,
+                shrinkage = .01,
+                n.minobsinnode = 10,
+                n.trees = 500)
+ 
+
+gbm_predictions_test_P <- predict.gbm(gbm_P, test_P)
+
+# Evaluate the performance of the model on the test set
+gbm_fit_P <- postResample(gbm_predictions_test_P, test_P$GROSS_PROFIT_DEAD_NET)
+mse_gbm_P <- mean((test_P$GROSS_PROFIT_DEAD_NET - gbm_predictions_test_P)^2)
+print(paste("Random Forest Regression MSE:", mse_gbm_P))
+```
+
+
+## Model results comparison 
+Compare the performance for LONGEVITY models
+```{r}
+# Compare Model fits
+lm_fit_L
+ksvm_fit_L
+gbm_fit_L
+
+# Compare Model MSE
+mse_lm_L
+mse_ksvm_L
+mse_gbm_L
+```
+
+Compare the performance for GROSS_PROFIT_DEAD_NET models
+```{r}
+# Compare Model fits
+lm_fit_P
+lasso_fit_P
+ridge_fit_P
+ksvm_fit_P
+gbm_fit_P
+
+# Compare Model MSE
+mse_lm_P
+mse_lasso_P
+mse_ridge_P
+mse_ksvm_P
+mse_gbm_P
+```
+
+# Conclusion
+Overall, we were able to help the sponsor to develop prediction models for our target variables ( Longevity & Gross_Profit_Dead_Net). We have achieved a great R^2 of 0.84 for Gross_Profit_Dead_Net with GBM model, and For Longevity, our R^2 is not as ideal(KSVM model), however we believe we can optimize it if we are provided with more historical data or census data. Moreover, by examine our prediction models and result we have found that Mexican restaurants, bars and Hamburger restaurants help the company to generate the highest profits. We suggest the company to offer better promotion or discount  when working with potential customers in those three categories, which will help the company to generate more profit in the long-run. We have also discovered that the counties (Box Elder & Summit ) that have the highest customer longevity are both working with Ogden sales, which we suggest the company to investigate what strategy the Ogden office is implementing to acheive a high customer longevity. 
