@@ -23,9 +23,10 @@ Include group's final model  and the datasets that have been used in the model.
 
 ## Presentation
 
-### [Customer Success Analysis .pptx](./Presentation/Customer Success Analysis .pptx)
+### [Customer Success Analysis .pptx](./Presentation)
 
 ## Group Member GitHub
 
 Vicky Mao: https://github.com/Vickym2333/Swire-Customer-Succcess
 
+Li Xiang: https://github.com/liviaxiang/2023CapstoneGroup5
